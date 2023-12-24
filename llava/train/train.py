@@ -58,6 +58,7 @@ class ModelArguments:
     mm_use_im_start_end: bool = field(default=False)
     mm_use_im_patch_token: bool = field(default=True)
     mm_vision_select_feature: Optional[str] = field(default="patch")
+    access_token: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -667,6 +668,8 @@ class LazySupervisedDataset(Dataset):
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
             image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            w2, h2 = (image.size[0]+1)//2, (image.size[1]+1)//2
+            images = [image.crop((x, y, x+w2, y+h2)) for x in (0, image.size[0]//2) for y in (0, image.size[1]//2)]
             if self.data_args.image_aspect_ratio == 'pad':
                 def expand2square(pil_img, background_color):
                     width, height = pil_img.size
@@ -680,10 +683,10 @@ class LazySupervisedDataset(Dataset):
                         result = Image.new(pil_img.mode, (height, height), background_color)
                         result.paste(pil_img, ((height - width) // 2, 0))
                         return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                images = [expand2square(im, tuple(int(x*255) for x in processor.image_mean)) for im in images]
+                images = [processor.preprocess(im, return_tensors='pt')['pixel_values'][0] for im in images]
             else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                images = [processor.preprocess(im, return_tensors='pt')['pixel_values'][0] for im in images]
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
@@ -699,7 +702,7 @@ class LazySupervisedDataset(Dataset):
 
         # image exist in the data
         if 'image' in self.list_data_dict[i]:
-            data_dict['image'] = image
+            data_dict['image'] = torch.stack(images)
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
@@ -789,18 +792,21 @@ def train():
                 model_args.model_name_or_path,
                 config=config,
                 cache_dir=training_args.cache_dir,
+                use_auth_token=model_args.access_token,
                 **bnb_model_from_pretrained_args
             )
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
+                use_auth_token=model_args.access_token,
                 **bnb_model_from_pretrained_args
             )
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
+            use_auth_token=model_args.access_token,
             **bnb_model_from_pretrained_args
         )
     model.config.use_cache = False
@@ -844,6 +850,7 @@ def train():
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
+            use_auth_token=model_args.access_token,
             padding_side="right"
         )
     else:
@@ -852,6 +859,7 @@ def train():
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
+            use_auth_token=model_args.access_token,
             use_fast=False,
         )
 
